@@ -396,6 +396,16 @@ cmd_kheapstats(int nargs, char **args)
 	return 0;
 }
 
+static
+int
+cmd_dth(int nargs, char **args)
+{
+	(void)nargs;
+	(void)args;
+	dbflags = 0x0010;
+	return 0;
+}
+
 ////////////////////////////////////////
 //
 // Menus.
@@ -428,6 +438,7 @@ showmenu(const char *name, const char *x[])
 static const char *opsmenu[] = {
 	"[s]       Shell                     ",
 	"[p]       Other program             ",
+	"[dth]     run tests with DB_THREADS ",
 	"[mount]   Mount a filesystem        ",
 	"[unmount] Unmount a filesystem      ",
 	"[bootfs]  Set \"boot\" filesystem     ",
@@ -549,6 +560,7 @@ static struct {
 	{ "q",		cmd_quit },
 	{ "exit",	cmd_quit },
 	{ "halt",	cmd_quit },
+	{ "dth", cmd_dth},
 
 #if OPT_SYNCHPROBS
 	/* in-kernel synchronization problem(s) */
