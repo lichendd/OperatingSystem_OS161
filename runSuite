@@ -1,0 +1,10 @@
+#!/bin/bash
+
+cd /u0/l93yu/cs350-os161/os161-1.99
+cd kern/conf
+./config ASST2
+cd ../compile/ASST2
+bmake depend
+bmake
+bmake install
+

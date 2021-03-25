@@ -1,0 +1,45 @@
+#!/bin/bash
+
+usage () {
+	echo "Usage: Missing test name"
+	exit 1
+}
+
+if [ $# -ne 1 ]; then
+	usage
+fi
+
+cd ~/cs350-os161/root
+
+output=""
+if [[ $1 == "uw1" ]]; then
+    output="TEST SUCCEEDED"
+elif [[ $1 == "sy2" ]]; then
+    output="Lock test done."
+else
+    echo "unknown test name"
+    exit 1
+fi
+
+success=0
+failure=0
+for i in {1..100}
+do
+    tmp=$(mktemp)
+    sys161 kernel "$1;q" > $tmp 2> $tmp
+
+    if egrep -x "$output" $tmp > /dev/null
+    then
+        let success++;
+        echo "test" $i ":success"
+    else 
+        let failure++;
+        echo "test" $i ":failed"
+        cat $tmp
+    fi
+
+    rm $tmp
+done
+
+echo "test finishes. success:" $success ", failure:" $failure
+

@@ -44,6 +44,7 @@
 #include <vfs.h>
 #include <syscall.h>
 #include <test.h>
+#include <copyinout.h>
 
 /*
  * Load program "progname" and start running it in usermode.
@@ -52,7 +53,7 @@
  * Calls vfs_open on progname and thus may destroy it.
  */
 int
-runprogram(char *progname)
+runprogram(char *progname, char ** args, int nargs)
 {
 	struct addrspace *as;
 	struct vnode *v;
@@ -97,9 +98,29 @@ runprogram(char *progname)
 		return result;
 	}
 
+	// new code
+	vaddr_t userStack = stackptr;
+	struct array * heapAddr = array_create();
+	for (int i = 0; i < nargs; i++) {
+		char * tmp = kmalloc(sizeof(char) * 128);
+		strcpy(tmp, (char*)args[i]);
+		array_add(heapAddr, tmp, NULL);
+	}
+	for (int i = 0; i < nargs; i++) {
+		userStack -= 128;
+		copyout(array_get(heapAddr, nargs-i-1), (userptr_t)userStack, 128);
+	}
+	userStack -= 128;
+	copyout(NULL, (userptr_t)userStack, 128);
+	
+	for (int i = 0; i < nargs; i++) {
+		userStack -= 4;
+		char ** t = (char**) userStack;
+		*t = (char*)userStack + 128*(nargs-i)+4*(1+i);
+	}
+
 	/* Warp to user mode. */
-	enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
-			  stackptr, entrypoint);
+	enter_new_process(nargs, (userptr_t)userStack, userStack, entrypoint); 
 	
 	/* enter_new_process does not return. */
 	panic("enter_new_process returned\n");

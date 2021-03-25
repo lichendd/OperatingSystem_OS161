@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Fill in these two variables before running:
+testName="sy3"
+
+cd ~/cs350-os161/root
+
+success=0
+failure=0
+
+tmp=$(mktemp)
+tmp2=$(mktemp)
+for i in {1..100}
+do  
+    sys161 kernel "${testName};q" > $tmp 2> $tmp
+    egrep -m 1 -159 "Thread 31" $tmp  | tail -160 > $tmp2
+
+    match=1
+    loopCount=0
+    curNum=31
+    
+    while IFS= read -r line; do
+        if [[ "$line" == "Thread $curNum" ]]; then
+            if [ $curNum -eq 0 ]; then
+                curNum=32
+                let loopCount++
+            fi
+            let curNum--
+        else
+            match=0
+        fi
+    done < $tmp2
+
+    if [ $match -eq 0 ]; then
+        let failure++;
+        echo "test" $i ":failed"
+    else 
+        let success++;
+        echo "test" $i ":success"
+    fi
+done
+
+rm $tmp $tmp2
+echo "test finishes. success:" $success ", failure:" $failure

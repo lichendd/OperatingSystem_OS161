@@ -37,6 +37,7 @@
  */
 
 #include <spinlock.h>
+#include "opt-A2.h"
 #include <thread.h> /* required for struct threadarray */
 
 struct addrspace;
@@ -44,7 +45,36 @@ struct vnode;
 #ifdef UW
 struct semaphore;
 #endif // UW
+#if OPT_A2
+struct proc {
+	char *p_name;			/* Name of this process */
+	struct spinlock p_lock;		/* Lock for this structure */
+	struct threadarray p_threads;	/* Threads in this process */
+	pid_t pid;
+	struct proc * parent;
+	struct array * child; // struct proc *
+	struct array * ChildPid; // int *
+	struct array * ChildStatus; // int *
+	struct cv * finish; // used to tell parent whether a child proc finish
+	struct lock * lock;
 
+	/* VM */
+	struct addrspace *p_addrspace;	/* virtual address space */
+
+	/* VFS */
+	struct vnode *p_cwd;
+#ifdef UW
+  /* a vnode to refer to the console device */
+  /* this is a quick-and-dirty way to get console writes working */
+  /* you will probably need to change this when implementing file-related
+     system calls, since each process will need to keep track of all files
+     it has opened, not just the console. */
+  struct vnode *console;                /* a vnode for the console device */
+#endif
+
+	/* add more material here as needed */
+};
+#else 
 /*
  * Process structure.
  */
@@ -70,6 +100,7 @@ struct proc {
 
 	/* add more material here as needed */
 };
+#endif /* OPT_A2 */
 
 /* This is the process structure for the kernel and for kernel-only threads. */
 extern struct proc *kproc;
