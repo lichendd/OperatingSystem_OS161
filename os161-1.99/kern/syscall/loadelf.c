@@ -59,6 +59,7 @@
 #include <addrspace.h>
 #include <vnode.h>
 #include <elf.h>
+#include "opt-A3.h"
 
 /*
  * Load a segment at virtual address VADDR. The segment in memory
@@ -150,6 +151,7 @@ load_segment(struct addrspace *as, struct vnode *v,
  *
  * Returns the entry point (initial PC) for the program in ENTRYPOINT.
  */
+#ifdef OPT_A3
 int
 load_elf(struct vnode *v, vaddr_t *entrypoint)
 {
@@ -302,6 +304,9 @@ load_elf(struct vnode *v, vaddr_t *entrypoint)
 	}
 
 	*entrypoint = eh.e_entry;
+	as_activate();
+	as->finish = true;
 
 	return 0;
 }
+#endif

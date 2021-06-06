@@ -39,7 +39,20 @@
 #include <vm.h>
 #include <mainbus.h>
 #include <syscall.h>
+#define EREADONLY 65
+#include "opt-A3.h"
 
+#include <kern/unistd.h>
+#include <kern/wait.h>
+#include <kern/fcntl.h>
+#include <proc.h>
+#include <addrspace.h>
+#include <copyinout.h>
+#include <synch.h>
+#include <array.h>
+#include <vfs.h>
+#include "opt-A2.h"
+#define SIGRO		33
 
 /* in exception.S */
 extern void asm_usermode(struct trapframe *tf);
@@ -69,9 +82,10 @@ static const char *const trapcodenames[NTRAPCODES] = {
 /*
  * Function called when user-level code hits a fatal fault.
  */
+#ifdef OPT_A3
 static
 void
-kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
+kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr, int vm_code)
 {
 	int sig = 0;
 
@@ -107,6 +121,91 @@ kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 		sig = SIGFPE;
 		break;
 	}
+	if (vm_code == EREADONLY) {
+		sig = SIGRO;
+		int exitcode = __WSIGNALED;
+		struct addrspace *as;
+		struct proc *p = curproc;
+		/* for now, just include this to keep the compiler from complaining about
+			an unused variable */
+		// (void)exitcode;
+
+		DEBUG(DB_SYSCALL,"Syscall: _exit(%d)\n",exitcode);
+
+		KASSERT(curproc->p_addrspace != NULL);
+
+		#if OPT_A2
+		// check if I am a child
+		struct proc* me = curproc;
+		me = me;
+
+		if (curproc->parent != NULL) {
+			lock_acquire (curproc->parent->lock);
+			// I am a child, need to tell my parent my exitcode. 
+			struct proc * p = curproc->parent;
+			for (int i = 0; i < (int)array_num(p->child);i++) {
+			struct proc* curChild = (struct proc*)array_get(p->child,i);
+			if (curChild!=NULL && curChild->pid == curproc->pid) {
+				int * childExit = array_get(p->ChildStatus, i);
+				* childExit = exitcode;
+				// array_remove(p->child,i);
+				array_set(p->child, i, NULL);
+				break;
+			}
+			}
+			lock_release(curproc->parent->lock);
+			// A child also need to wake up its parent
+			cv_signal(curproc->finish, curproc->lock);
+		}
+
+
+		// check if I am a parent
+		lock_acquire(curproc->lock);
+
+		// I am a parent, need to tell my children that I died :( 
+		int size = array_num(curproc->child);
+		for (int i = 0; i < size; i++) {
+			struct proc * c = array_get(curproc->child, i);
+			if ( c!= NULL) c->parent = NULL;
+		}
+		while (array_num(curproc->child)) {
+			array_remove(curproc->child, 0);
+		}
+
+		// also need to free everything
+		while (array_num(curproc->ChildPid)) {
+			kfree(array_get(curproc->ChildPid,0));
+			kfree(array_get(curproc->ChildStatus,0));
+			array_remove(curproc->ChildPid,0);
+			array_remove(curproc->ChildStatus,0);
+		}
+
+		lock_release(curproc->lock);
+
+		#endif
+
+		as_deactivate();
+		/*
+		* clear p_addrspace before calling as_destroy. Otherwise if
+		* as_destroy sleeps (which is quite possible) when we
+		* come back we'll be calling as_activate on a
+		* half-destroyed address space. This tends to be
+		* messily fatal.
+		*/
+		as = curproc_setas(NULL);
+		as_destroy(as);
+
+		/* detach this thread from its process */
+		/* note: curproc cannot be used after this call */
+		proc_remthread(curthread);
+		
+		/* if this is the last user process in the system, proc_destroy()
+			will wake up the kernel menu thread */
+		proc_destroy(p);
+		
+		thread_exit();
+		return;
+	}
 
 	/*
 	 * You will probably want to change this.
@@ -116,6 +215,7 @@ kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 		code, sig, trapcodenames[code], epc, vaddr);
 	panic("I don't know how to handle this\n");
 }
+#endif // opt_a3
 
 /*
  * General trap (exception) handling function for mips.
@@ -128,6 +228,7 @@ mips_trap(struct trapframe *tf)
 	uint32_t code;
 	bool isutlb, iskern;
 	int spl;
+	int vm_code = 0;
 
 	/* The trap frame is supposed to be 37 registers long. */
 	KASSERT(sizeof(struct trapframe)==(37*4));
@@ -231,17 +332,20 @@ mips_trap(struct trapframe *tf)
 	 */
 	switch (code) {
 	case EX_MOD:
-		if (vm_fault(VM_FAULT_READONLY, tf->tf_vaddr)==0) {
+		vm_code = vm_fault(VM_FAULT_READONLY, tf->tf_vaddr);
+		if (vm_code == 0) {
 			goto done;
 		}
 		break;
 	case EX_TLBL:
-		if (vm_fault(VM_FAULT_READ, tf->tf_vaddr)==0) {
+		vm_code = vm_fault(VM_FAULT_READ, tf->tf_vaddr);
+		if (vm_code ==0) {
 			goto done;
 		}
 		break;
 	case EX_TLBS:
-		if (vm_fault(VM_FAULT_WRITE, tf->tf_vaddr)==0) {
+		vm_code = vm_fault(VM_FAULT_WRITE, tf->tf_vaddr);
+		if (vm_code ==0) {
 			goto done;
 		}
 		break;
@@ -271,7 +375,7 @@ mips_trap(struct trapframe *tf)
 		 * Fatal fault in user mode.
 		 * Kill the current user process.
 		 */
-		kill_curthread(tf->tf_epc, code, tf->tf_vaddr);
+		kill_curthread(tf->tf_epc, code, tf->tf_vaddr, vm_code);
 		goto done;
 	}
 

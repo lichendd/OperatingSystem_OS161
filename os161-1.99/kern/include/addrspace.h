@@ -55,6 +55,7 @@ struct addrspace {
   paddr_t as_pbase2;
   size_t as_npages2;
   paddr_t as_stackpbase;
+  bool finish;
 };
 
 /*
@@ -117,6 +118,5 @@ int               as_define_stack(struct addrspace *as, vaddr_t *initstackptr);
  */
 
 int load_elf(struct vnode *v, vaddr_t *entrypoint);
-
 
 #endif /* _ADDRSPACE_H_ */

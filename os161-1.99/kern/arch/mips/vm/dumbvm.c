@@ -37,7 +37,8 @@
 #include <mips/tlb.h>
 #include <addrspace.h>
 #include <vm.h>
-
+#include "opt-A3.h"
+#define EREADONLY 65
 /*
  * Dumb MIPS-only "VM system" that is intended to only be just barely
  * enough to struggle off the ground.
@@ -50,12 +51,32 @@
  * Wrap rma_stealmem in a spinlock.
  */
 static struct spinlock stealmem_lock = SPINLOCK_INITIALIZER;
+int * coreMap; // first entry of core map
+bool mapCreated = false;
+int mapSize = 0;
 
+#ifdef OPT_A3
 void
 vm_bootstrap(void)
 {
-	/* Do nothing. */
+	paddr_t lo, hi, tmp;
+	ram_getsize(&lo, &hi);
+	coreMap = (int *) PADDR_TO_KVADDR(lo);
+	tmp = lo + PAGE_SIZE;
+	while (tmp < hi) {
+		coreMap[mapSize] = 0;
+		mapSize ++;
+		tmp += PAGE_SIZE;
+	}
+	paddr_t newLo = lo + PAGE_SIZE;
+	int t = 0;
+	while ((paddr_t) (coreMap + sizeof(int) * mapSize) < newLo) {
+		coreMap[mapSize + t] = 0;
+		t ++;
+	}
+	mapCreated = true;
 }
+
 
 static
 paddr_t
@@ -63,11 +84,34 @@ getppages(unsigned long npages)
 {
 	paddr_t addr;
 
-	spinlock_acquire(&stealmem_lock);
+	if (!mapCreated) {
+		spinlock_acquire(&stealmem_lock);
 
-	addr = ram_stealmem(npages);
-	
-	spinlock_release(&stealmem_lock);
+		addr = ram_stealmem(npages);
+		
+		spinlock_release(&stealmem_lock);
+	} else {
+		int continousPage = 0;
+		bool found = false;
+		for (int i = 0; i < mapSize; i++) {
+			if (coreMap[i] == 0) {
+				continousPage ++;
+				if (continousPage == (signed int) npages) {
+					addr = (paddr_t) coreMap - MIPS_KSEG0 + (i - npages + 2) * PAGE_SIZE;
+					found = true;
+					for (int j = 1; j <= (int) npages; j++) {
+						coreMap[i-npages+j] = j;
+					}
+					break;
+				}
+			} else {
+				continousPage = 0;
+			}
+		}
+		if (!found) {
+			addr = 0;
+		}
+	}
 	return addr;
 }
 
@@ -87,9 +131,17 @@ void
 free_kpages(vaddr_t addr)
 {
 	/* nothing - leak the memory. */
-
-	(void)addr;
+	paddr_t ad = addr - MIPS_KSEG0; 
+	paddr_t start = (paddr_t) coreMap - MIPS_KSEG0;
+	int mapIndex = (ad - start)/PAGE_SIZE;
+	int pre = 0;
+	while (coreMap[mapIndex - 1] > pre) {
+		pre = coreMap[mapIndex - 1];
+		coreMap[mapIndex - 1] = 0;
+		mapIndex ++;
+	}
 }
+#endif
 
 void
 vm_tlbshootdown_all(void)
@@ -104,6 +156,7 @@ vm_tlbshootdown(const struct tlbshootdown *ts)
 	panic("dumbvm tried to do tlb shootdown?!\n");
 }
 
+#ifdef OPT_A3
 int
 vm_fault(int faulttype, vaddr_t faultaddress)
 {
@@ -113,6 +166,7 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	uint32_t ehi, elo;
 	struct addrspace *as;
 	int spl;
+	bool codeSeg = false;
 
 	faultaddress &= PAGE_FRAME;
 
@@ -121,7 +175,8 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	switch (faulttype) {
 	    case VM_FAULT_READONLY:
 		/* We always create pages read-write, so we can't get this */
-		panic("dumbvm: got VM_FAULT_READONLY\n");
+		//panic("dumbvm: got VM_FAULT_READONLY\n");
+		return EREADONLY;
 	    case VM_FAULT_READ:
 	    case VM_FAULT_WRITE:
 		break;
@@ -169,12 +224,16 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 	stacktop = USERSTACK;
 
 	if (faultaddress >= vbase1 && faultaddress < vtop1) {
+		// code segment
 		paddr = (faultaddress - vbase1) + as->as_pbase1;
+		codeSeg = true;
 	}
 	else if (faultaddress >= vbase2 && faultaddress < vtop2) {
+		// data segment
 		paddr = (faultaddress - vbase2) + as->as_pbase2;
 	}
 	else if (faultaddress >= stackbase && faultaddress < stacktop) {
+		// stack
 		paddr = (faultaddress - stackbase) + as->as_stackpbase;
 	}
 	else {
@@ -194,16 +253,27 @@ vm_fault(int faulttype, vaddr_t faultaddress)
 		}
 		ehi = faultaddress;
 		elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+		if (codeSeg && as->finish) {
+			elo &= ~TLBLO_DIRTY; 
+		}
 		DEBUG(DB_VM, "dumbvm: 0x%x -> 0x%x\n", faultaddress, paddr);
 		tlb_write(ehi, elo, i);
 		splx(spl);
 		return 0;
 	}
 
-	kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
+	ehi = faultaddress;
+	elo = paddr | TLBLO_DIRTY | TLBLO_VALID;
+	if (codeSeg && as->finish) {
+		elo &= ~TLBLO_DIRTY; 
+	}
+	tlb_random(ehi, elo);
+	//kprintf("dumbvm: Ran out of TLB entries - cannot handle page fault\n");
 	splx(spl);
-	return EFAULT;
+	//return EFAULT;
+	return 0;
 }
+#endif // opt a3
 
 struct addrspace *
 as_create(void)
@@ -220,15 +290,21 @@ as_create(void)
 	as->as_pbase2 = 0;
 	as->as_npages2 = 0;
 	as->as_stackpbase = 0;
+	as->finish = false;
 
 	return as;
 }
 
+#ifdef OPT_A3
 void
 as_destroy(struct addrspace *as)
 {
+	free_kpages(PADDR_TO_KVADDR(as->as_pbase1));
+	free_kpages(PADDR_TO_KVADDR(as->as_pbase2));
+	free_kpages(PADDR_TO_KVADDR(as->as_stackpbase));
 	kfree(as);
 }
+#endif // opt a3
 
 void
 as_activate(void)
